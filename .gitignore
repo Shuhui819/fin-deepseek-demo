@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Conda
+*.conda
+*.condarc
+
+# OS
+.DS_Store
+Thumbs.db
