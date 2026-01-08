@@ -1,4 +1,18 @@
-# src/ft_adapter.py
+"""
+Phase 2 MVP version
+
+Currently supported metrics (stable):
+- Gross Margin
+- Debt Ratio
+
+Other metrics (ROE, ROIC, P/E) are defined
+but may be unavailable depending on data source.
+
+Usage:
+- MVP only (default): get_key_metrics("AAPL")  -> returns 2 metrics
+- Full list:           get_key_metrics("AAPL", mvp_only=False) -> returns all defined metrics
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -75,11 +89,22 @@ def _latest_period_from_columns(df: pd.DataFrame) -> Optional[str]:
     return str(cols[-1])
 
 
-def get_key_metrics(ticker: str) -> pd.DataFrame:
+def get_key_metrics(ticker: str, mvp_only: bool = True) -> pd.DataFrame:
     """
     Unified interface for core metrics.
+
     Returns a tidy DataFrame with fields:
     Metric | Value | Period | Unit | Description
+
+    Parameters
+    ----------
+    ticker : str
+        Stock ticker, e.g. "AAPL"
+    mvp_only : bool
+        If True (default), only return stable MVP metrics:
+        - Gross Margin
+        - Debt Ratio
+        If False, return all defined metrics (may contain NaN for some).
     """
     ticker = ticker.strip().upper()
     tk = Toolkit([ticker])
@@ -114,7 +139,12 @@ def get_key_metrics(ticker: str) -> pd.DataFrame:
     total_liab = stmt_value(balance, "Total Liabilities", period)
     if np.isnan(total_liab):
         total_liab = stmt_value(balance, "Total Liabilities Net Minority Interest", period)
-    debt_ratio = (total_liab / total_assets) if (total_assets and not np.isnan(total_assets) and total_assets != 0) else np.nan
+
+    debt_ratio = (
+        (total_liab / total_assets)
+        if (total_assets and not np.isnan(total_assets) and total_assets != 0)
+        else np.nan
+    )
 
     # 4) Try to get ROE / ROIC / PE from FinanceToolkit if available
     # Different versions expose different endpoints; we keep it robust:
@@ -122,9 +152,8 @@ def get_key_metrics(ticker: str) -> pd.DataFrame:
     roic = np.nan
     pe = np.nan
 
-    # ROE / ROIC sometimes available via ratios module; if not, we’ll leave NaN for now (still acceptable for T2.1)
+    # ROE / ROIC sometimes available via ratios module; if not, we’ll leave NaN
     try:
-        # Many versions provide get_profitability_ratios / get_valuation_ratios etc.
         prof = tk.get_profitability_ratios()
         if prof is not None and not prof.empty:
             p = _latest_period_from_columns(prof) or period
@@ -167,9 +196,17 @@ def get_key_metrics(ticker: str) -> pd.DataFrame:
         "ROIC": roic,
     }
 
+    # MVP only:只返回稳定的两个指标，避免页面/图表出现 NaN
+    if mvp_only:
+        mvp_keys = {"GrossMargin", "DebtRatio"}
+        selected_metrics = [m for m in METRICS if m.key in mvp_keys]
+    else:
+        selected_metrics = METRICS
+
     rows = []
-    for m in METRICS:
+    for m in selected_metrics:
         v = values.get(m.key, np.nan)
+
         # Percent display: keep as ratio if toolkit returns ratio; for now, standardize to percentage number (0.23 -> 23)
         if m.unit == "%" and not np.isnan(v):
             # Heuristic: if value <= 1.5, treat as ratio; else already in percent
