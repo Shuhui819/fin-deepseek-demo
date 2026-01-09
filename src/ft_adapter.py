@@ -13,10 +13,9 @@ Usage:
 - Full list:           get_key_metrics("AAPL", mvp_only=False) -> returns all defined metrics
 - Inspect statements:  get_key_metrics("AAPL", inspect=True)   -> prints columns/index for L1-1
 """
+from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()  # 这会自动加载 .env 文件中的环境变量
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Optional, List, Dict
 import os
