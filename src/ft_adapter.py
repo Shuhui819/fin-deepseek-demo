@@ -128,48 +128,75 @@ def get_key_metrics(
     # Get API key from parameter or environment variable
     fmp_key = api_key or os.getenv("FMP_API_KEY")
     
-    # Initialize Toolkit with appropriate parameters
+    # Try FMP first if key is available, but be ready to fallback to Yahoo
+    tk = None
+    data_source = "Unknown"
+    
     if fmp_key:
         if inspect:
-            print(f"[DEBUG] Using FinancialModelingPrep with API key (length: {len(fmp_key)})")
+            print(f"[DEBUG] Attempting to use FinancialModelingPrep (API key length: {len(fmp_key)})")
         
-        tk = Toolkit(
-            [ticker],
-            api_key=fmp_key,
-            enforce_source="FinancialModelingPrep",
-            progress_bar=False,
-            use_cached_data=True,    # Enable caching to reduce API calls
-            sleep_timer=0.1,         # Avoid rate limiting
-        )
-    else:
+        try:
+            tk = Toolkit(
+                [ticker],
+                api_key=fmp_key,
+                progress_bar=False,
+                quarterly=False,
+                sleep_timer=0.1,
+            )
+            
+            # Quick test to see if FMP works (try to get a small piece of data)
+            test_income = tk.get_income_statement()
+            if test_income is None or test_income.empty:
+                if inspect:
+                    print("[WARN] FMP returned empty data (likely free tier limitation)")
+                    print("[INFO] Falling back to Yahoo Finance...")
+                tk = None  # Trigger fallback
+            else:
+                data_source = "FinancialModelingPrep"
+                if inspect:
+                    print("[SUCCESS] Using FinancialModelingPrep")
+        except Exception as e:
+            if inspect:
+                print(f"[ERROR] FMP failed: {e}")
+                print("[INFO] Falling back to Yahoo Finance...")
+            tk = None
+    
+    # Fallback to Yahoo Finance if FMP not available or failed
+    if tk is None:
         if inspect:
-            print("[DEBUG] No API key provided. Using Yahoo Finance (may hit rate limits)")
-            print("[INFO] Set FMP_API_KEY environment variable or pass api_key parameter")
+            print("[DEBUG] Using Yahoo Finance (free, but may have rate limits)")
         
         tk = Toolkit(
             [ticker],
             progress_bar=False,
-            use_cached_data=True,
         )
+        data_source = "Yahoo Finance"
 
     # 1) Pull statements (reliable for ratios we can compute ourselves)
-    try:
-        income = tk.get_income_statement()
-    except Exception as e:
-        if inspect:
-            print(f"[ERROR] Failed to get income statement: {e}")
-        income = pd.DataFrame()
+    income = pd.DataFrame()
+    balance = pd.DataFrame()
+    
+    # If we already tested income in the FMP check, reuse it
+    if data_source == "FinancialModelingPrep" and 'test_income' in locals():
+        income = test_income
+    else:
+        try:
+            income = tk.get_income_statement()
+        except Exception as e:
+            if inspect:
+                print(f"[ERROR] Failed to get income statement: {e}")
     
     try:
         balance = tk.get_balance_sheet_statement()
     except Exception as e:
         if inspect:
             print(f"[ERROR] Failed to get balance sheet: {e}")
-        balance = pd.DataFrame()
 
     # --- L1-1: data coverage inspection (only when inspect=True) ---
     if inspect:
         print("\n========== L1-1 INSPECT ==========")
+        print(f"Data Source: {data_source}")
         print("INCOME shape:", getattr(income, "shape", None))
         print("BALANCE shape:", getattr(balance, "shape", None))
         print("INCOME COLUMNS (first 30):", list(getattr(income, "columns", []))[:30])
