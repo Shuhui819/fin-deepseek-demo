@@ -1,0 +1,78 @@
+version: "1.0"
+default_primary_chart: "line"
+
+indicators:
+  gross_margin:
+    indicator_name: "Gross Margin"
+    category: "profitability"
+    unit: "%"
+    primary_chart: "line"
+    plot_mode: "line_multi_same_unit"
+    group_key: "profitability_margins"
+    data_freq: "annual"
+    formula: "gross_profit / revenue"
+
+  operating_margin:
+    indicator_name: "Operating Margin"
+    category: "profitability"
+    unit: "%"
+    primary_chart: "line"
+    plot_mode: "line_multi_same_unit"
+    group_key: "profitability_margins"
+    data_freq: "annual"
+    formula: "operating_income / revenue"
+
+  roe:
+    indicator_name: "Return on Equity (ROE)"
+    category: "profitability"
+    unit: "%"
+    primary_chart: "line"
+    plot_mode: "line_single"
+    group_key: "profitability_returns"
+    data_freq: "annual"
+    formula: "net_income / total_equity"
+
+  debt_ratio:
+    indicator_name: "Debt Ratio"
+    category: "solvency"
+    unit: "ratio"
+    primary_chart: "line"
+    plot_mode: "line_single"
+    group_key: "solvency"
+    data_freq: "annual"
+    formula: "total_liabilities / total_assets"
+
+  current_ratio:
+    indicator_name: "Current Ratio"
+    category: "liquidity"
+    unit: "ratio"
+    primary_chart: "line"
+    plot_mode: "line_single"
+    group_key: "liquidity"
+    data_freq: "annual"
+    formula: "current_assets / current_liabilities"
+
+groups:
+  profitability_margins:
+    display_name: "Profitability Margins"
+    description: "Operating-level margins, same-unit overlay allowed"
+    indicator_keys: ["gross_margin", "operating_margin"]
+    require_same_unit: true
+
+  profitability_returns:
+    display_name: "Shareholder Return"
+    description: "ROE only (kept separate from margins in V1)"
+    indicator_keys: ["roe"]
+    require_same_unit: true
+
+  solvency:
+    display_name: "Solvency"
+    description: "Capital structure / leverage"
+    indicator_keys: ["debt_ratio"]
+    require_same_unit: true
+
+  liquidity:
+    display_name: "Liquidity"
+    description: "Short-term solvency"
+    indicator_keys: ["current_ratio"]
+    require_same_unit: true
