@@ -12,15 +12,22 @@ Usage:
 - MVP only (default): get_key_metrics("AAPL")  -> returns 2 metrics
 - Full list:           get_key_metrics("AAPL", mvp_only=False) -> returns all defined metrics
 - Inspect statements:  get_key_metrics("AAPL", inspect=True)   -> prints columns/index for L1-1
+
+Note: Ensure load_dotenv() is called in your application entry point (app.py or test scripts)
+      before importing this module if using .env files.
 """
+
 from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()  # 这会自动加载 .env 文件中的环境变量
+
 from dataclasses import dataclass
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 import os
+
 import numpy as np
 import pandas as pd
+
 from financetoolkit import Toolkit
 
 
@@ -70,26 +77,22 @@ def _clean_missing(series: pd.Series) -> pd.Series:
     return s_num
 
 
-def _latest_period_from_columns(df: pd.DataFrame) -> Optional[str]:
-    """Pick the latest period column (year) if columns look like years."""
+def _latest_period_from_columns(df: pd.DataFrame) -> Optional[Any]:
+    """
+    Pick the latest period column, preserving its original type (Period/Datetime/etc).
+    This ensures we can match it against the actual DataFrame columns.
+    """
     if df is None or df.empty:
         return None
-
-    cols = list(df.columns)
-
-    # try to interpret as ints (years)
-    years = []
-    for c in cols:
-        try:
-            years.append(int(str(c)))
-        except Exception:
-            pass
-
-    if years:
-        return str(max(years))
-
-    # fallback: last column
-    return str(cols[-1]) if cols else None
+    
+    cols = df.columns
+    
+    try:
+        # For PeriodIndex/DatetimeIndex, max() works directly
+        return cols.max()
+    except Exception:
+        # Fallback: return last column as-is
+        return cols[-1] if len(cols) > 0 else None
 
 
 def get_key_metrics(
@@ -133,18 +136,20 @@ def get_key_metrics(
         tk = Toolkit(
             [ticker],
             api_key=fmp_key,
-            start_date="2020-01-01",  # Get recent years of data
+            enforce_source="FinancialModelingPrep",
             progress_bar=False,
+            use_cached_data=True,    # Enable caching to reduce API calls
+            sleep_timer=0.1,         # Avoid rate limiting
         )
     else:
         if inspect:
             print("[DEBUG] No API key provided. Using Yahoo Finance (may hit rate limits)")
-            print("[INFO] Set FMP_API_KEY environment variable or pass api_key parameter to use FinancialModelingPrep")
+            print("[INFO] Set FMP_API_KEY environment variable or pass api_key parameter")
         
         tk = Toolkit(
             [ticker],
-            start_date="2020-01-01",
             progress_bar=False,
+            use_cached_data=True,
         )
 
     # 1) Pull statements (reliable for ratios we can compute ourselves)
@@ -162,7 +167,7 @@ def get_key_metrics(
             print(f"[ERROR] Failed to get balance sheet: {e}")
         balance = pd.DataFrame()
 
-    # --- L1-1: data coverage inspection (temporary & controllable) ---
+    # --- L1-1: data coverage inspection (only when inspect=True) ---
     if inspect:
         print("\n========== L1-1 INSPECT ==========")
         print("INCOME shape:", getattr(income, "shape", None))
@@ -173,47 +178,65 @@ def get_key_metrics(
         print("BALANCE INDEX (first 60):", list(getattr(balance, "index", []))[:60])
         print("=================================\n")
 
-    # If statements are empty, warn clearly (do not crash Demo)
-    if income is None or income.empty:
-        print("[WARN] Income statement is empty. Data may be unavailable due to:")
-        print("       - Yahoo Finance rate limits (if no API key provided)")
-        print("       - Invalid API key")
-        print("       - Network issues")
-        print("       - Invalid ticker symbol")
+        # Only print warnings in inspect mode (avoid Streamlit console spam)
+        if income is None or income.empty:
+            print("[WARN] Income statement is empty. Possible reasons:")
+            print("       - Yahoo Finance rate limits (if no API key)")
+            print("       - Invalid API key")
+            print("       - Network issues")
+            print("       - Invalid ticker symbol")
 
-    if balance is None or balance.empty:
-        print("[WARN] Balance sheet is empty. See reasons above.")
+        if balance is None or balance.empty:
+            print("[WARN] Balance sheet is empty. See reasons above.")
 
-    # 2) Determine period (latest year)
-    period = _latest_period_from_columns(income) or _latest_period_from_columns(balance) or "Latest"
+    # 2) Determine period (latest year) - keep original type (Period/Datetime)
+    # Explicitly check None to avoid relying on truthiness of Period objects
+    period = _latest_period_from_columns(income)
+    if period is None:
+        period = _latest_period_from_columns(balance)
+    
+    if inspect and period is not None:
+        print(f"[DEBUG] Latest period: {period} (type: {type(period).__name__})")
 
     # Helper to safely read a value from a statement table
-    def stmt_value(stmt: pd.DataFrame, row_name: str, col_name: str) -> float:
+    def stmt_value(stmt: pd.DataFrame, row_name: str, col: Any) -> float:
+        """
+        Extract value from statement, using the original column object (not string).
+        """
         if stmt is None or stmt.empty:
             return np.nan
         if row_name not in stmt.index:
             return np.nan
-        if col_name not in stmt.columns:
+        if col not in stmt.columns:
             return np.nan
         s = _clean_missing(stmt.loc[row_name])
-        return _as_float(s.get(col_name, np.nan))
+        return _as_float(s.get(col, np.nan))
 
     # 3) Compute / retrieve core metrics (MVP: compute from statements where possible)
 
     # --- Gross Margin = Gross Profit / Revenue
-    revenue = stmt_value(income, "Revenue", period)
-    gross_profit = stmt_value(income, "Gross Profit", period)
+    revenue = stmt_value(income, "Revenue", period) if period else np.nan
+    gross_profit = stmt_value(income, "Gross Profit", period) if period else np.nan
     gross_margin = (gross_profit / revenue) if (not np.isnan(revenue) and revenue != 0) else np.nan
 
     # --- Debt Ratio = Total Liabilities / Total Assets
-    total_assets = stmt_value(balance, "Total Assets", period)
+    total_assets = stmt_value(balance, "Total Assets", period) if period else np.nan
 
     # Some datasets may use "Total Liabilities" or "Total Liabilities Net Minority Interest"
-    total_liab = stmt_value(balance, "Total Liabilities", period)
+    total_liab = stmt_value(balance, "Total Liabilities", period) if period else np.nan
     if np.isnan(total_liab):
-        total_liab = stmt_value(balance, "Total Liabilities Net Minority Interest", period)
+        total_liab = stmt_value(balance, "Total Liabilities Net Minority Interest", period) if period else np.nan
 
     debt_ratio = (total_liab / total_assets) if (not np.isnan(total_assets) and total_assets != 0) else np.nan
+
+    # Debug values if requested
+    if inspect:
+        print(f"[DEBUG] Revenue: {revenue}")
+        print(f"[DEBUG] Gross Profit: {gross_profit}")
+        print(f"[DEBUG] Gross Margin: {gross_margin}")
+        print(f"[DEBUG] Total Assets: {total_assets}")
+        print(f"[DEBUG] Total Liabilities: {total_liab}")
+        print(f"[DEBUG] Debt Ratio: {debt_ratio}\n")
 
     # 4) Try to get ROE / ROIC / PE from FinanceToolkit if available
     roe = np.nan
@@ -224,7 +247,9 @@ def get_key_metrics(
     try:
         prof = tk.get_profitability_ratios()
         if prof is not None and not prof.empty:
-            p = _latest_period_from_columns(prof) or period
+            p = _latest_period_from_columns(prof)
+            if p is None:
+                p = period
             if "Return on Equity" in prof.index:
                 roe = _as_float(_clean_missing(prof.loc["Return on Equity"]).get(p, np.nan))
             elif "ROE" in prof.index:
@@ -236,7 +261,9 @@ def get_key_metrics(
     try:
         eff = tk.get_efficiency_ratios()
         if eff is not None and not eff.empty:
-            p = _latest_period_from_columns(eff) or period
+            p = _latest_period_from_columns(eff)
+            if p is None:
+                p = period
             if "Return on Invested Capital" in eff.index:
                 roic = _as_float(_clean_missing(eff.loc["Return on Invested Capital"]).get(p, np.nan))
             elif "ROIC" in eff.index:
@@ -248,7 +275,9 @@ def get_key_metrics(
     try:
         val = tk.get_valuation_ratios()
         if val is not None and not val.empty:
-            p = _latest_period_from_columns(val) or period
+            p = _latest_period_from_columns(val)
+            if p is None:
+                p = period
             for candidate in ["Price Earnings Ratio", "P/E", "PE Ratio", "Price to Earnings"]:
                 if candidate in val.index:
                     pe = _as_float(_clean_missing(val.loc[candidate]).get(p, np.nan))
@@ -272,11 +301,16 @@ def get_key_metrics(
     else:
         selected_metrics = METRICS
 
+    # Format period for display (convert to string for output)
+    period_str = str(period) if period else "Latest"
+
     rows = []
     for m in selected_metrics:
         v = values.get(m.key, np.nan)
 
         # Percent display: standardize to percentage number (0.23 -> 23)
+        # Note: This heuristic works for current MVP metrics (Gross Margin, Debt Ratio)
+        # May need per-metric handling when expanding to other metrics
         if m.unit == "%" and not np.isnan(v):
             # Heuristic: if value <= 1.5, treat as ratio; else already in percent
             if abs(v) <= 1.5:
@@ -286,7 +320,7 @@ def get_key_metrics(
             {
                 "Metric": m.display_name,
                 "Value": v,
-                "Period": period,
+                "Period": period_str,
                 "Unit": m.unit,
                 "Description": m.description,
             }
