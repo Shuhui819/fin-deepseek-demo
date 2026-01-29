@@ -99,8 +99,23 @@ def build_group_prompt(
     user_prompt: str,
 ) -> str:
     """
-    将一个指标组里的多条时间序列一起打包给模型。
+    构造“指标组”的 Prompt：
+    - 利用 Schema 里的 GroupMeta / IndicatorMeta 提供更多上下文
+    - 让大模型按一个小型“分析报告”的结构来输出
     """
+
+    # ---- 1) 解析组的元信息 ----
+    group_display_name = group_key
+    group_desc = ""
+
+    if schema is not None and hasattr(schema, "groups"):
+        groups: Dict[str, Any] = getattr(schema, "groups")
+        if group_key in groups:
+            gm = groups[group_key]
+            group_display_name = getattr(gm, "display_name", group_key)
+            group_desc = getattr(gm, "description", "")
+
+    # ---- 2) 构造多指标时间序列块 ----
     lines: List[str] = []
 
     for key in indicator_keys:
@@ -111,17 +126,20 @@ def build_group_prompt(
         if series.empty:
             continue
 
+        # 从 indicators 里补充元信息
         display_name = key
         unit = ""
+        category = ""
 
         if schema is not None and hasattr(schema, "indicators"):
             indicators: Dict[str, Any] = getattr(schema, "indicators")
             if key in indicators:
                 meta = indicators[key]
-                display_name = getattr(meta, "indicator_name", getattr(meta, "name", key))
+                display_name = getattr(meta, "indicator_name", key)
                 unit = getattr(meta, "unit", "")
+                category = getattr(meta, "category", "")
 
-        header = f"- 指标 {key}（{display_name}，单位：{unit}）"
+        header = f"- 指标 {key}｜名称：{display_name}｜类别：{category or '未标注'}｜单位：{unit or '无单位/比率'}"
         values = "\n".join(
             f"    · {idx}: {val:.4f}" for idx, val in series.items()
         )
@@ -132,27 +150,50 @@ def build_group_prompt(
     else:
         series_block = "\n\n".join(lines)
 
+    # ---- 3) 拼接最终 Prompt ----
     base_prompt = f"""
 你是一名金融数据分析助手，擅长从“多个财务指标的组合”中，看出一家公司的整体财务状况和变化趋势。
 
 现在给你一家公司 {ticker} 的一个“指标组”（group），其中包含若干个相关的财务指标，请你结合这些指标的时间序列进行综合分析。
 
-指标组 Key：{group_key}
+指标组基本信息：
+- Group Key：{group_key}
+- Group 名称：{group_display_name}
+- Group 描述：{group_desc or "（无额外描述）"}
 
 该组内各指标的时间序列（按年份排序，最近在下方）：
 
 {series_block}
 
-请按照以下要求回答（使用中文）：
-1. 先整体概括：这个指标组整体反映的是什么维度（例如：盈利能力、偿债与杠杆、成长性、运营效率等），并用 1-2 句话总结过去这些年里公司的整体变化。
-2. 点名至少 2-3 个代表性的指标，分别说明它们的趋势（上升/下降/波动）以及和公司经营之间的直观联系。
-3. 如果不同指标之间存在明显的“配合关系”或“矛盾关系”（例如：利润率提高但负债率也显著上升），请尝试做出合理的解释。
-4. 如果数据年份较少或者波动很大，请明确说明结论的有限性，避免过度解读。
-5. 结合用户给出的额外问题，做适度的补充说明，但不要给具体的投资建议。
+请严格按照以下结构，用中文输出你的分析（使用 Markdown 小标题）：
 
+### 1. 趋势总览（整体视角）
+- 用 2-3 句话概括：这个指标组整体反映的财务维度是什么（例如：盈利能力、偿债与杠杆、成长性、运营效率等）。
+- 概括过去这些年里，公司在这一维度是整体改善、恶化还是大致稳定。
+
+### 2. 指标拆解（逐个看代表性指标）
+- 至少点名 2-3 个关键指标（用“指标中文名 + 简短解释”的形式），说明：
+  - 各自的走势（上升/下降/波动）
+  - 以及它们和公司经营之间最直观的联系（例如：毛利率提升意味着定价能力/成本控制改善）。
+
+### 3. 指标之间的关系（协同 / 矛盾）
+- 如果不同指标之间存在明显的“配合关系”或“矛盾关系”（例如：利润率提高但负债率也显著上升），请：
+  - 先描述现象，再给出 1-2 个可能的合理解释。
+- 如果数据不足以支持清晰结论，也请明确说明。
+
+### 4. 风险与不确定性（不要给投资建议）
+- 指出该组数据中可能存在的局限性，例如：
+  - 时间跨度较短、波动很大、缺少关键年份等。
+- 从“解读角度”出发给出提示：哪些地方需要谨慎，不要做过度推断。
+- 不要给任何“买入/卖出/估值便宜或昂贵”的判断，也不要给投资建议。
+
+### 5. 回应用户的特别关注点
 用户的额外问题是：
 {user_prompt.strip() if user_prompt.strip() else "无特别问题，请你站在长期、审慎的角度给出专业分析。"}
+
+- 请在最后一个小段落单独用 2-3 句话回应用户的问题，或者说明为什么当前数据不足以回答。
 """
+
     return base_prompt.strip()
 
 
@@ -295,6 +336,40 @@ def analyze_group_timeseries(
         group_key=group_key,
         df=df,
         indicator_keys=indicator_keys,
+        schema=schema,
+        user_prompt=user_prompt,
+    )
+
+    return call_llm(prompt)
+
+def analyze_custom_bundle_timeseries(
+    ticker: str,
+    df: pd.DataFrame,
+    indicator_keys: List[str],
+    schema: Any = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    对“用户自定义选出的多个指标”的时间序列进行 AI 分析。
+
+    和 analyze_group_timeseries 很像，只是不依赖 schema.groups，
+    指标集合完全来自前端的 multiselect。
+    """
+    if not indicator_keys:
+        raise ValueError("请至少选择一个指标进行分析。")
+
+    # 过滤掉 df 中不存在的列
+    valid_keys = [k for k in indicator_keys if k in df.columns]
+
+    if not valid_keys:
+        raise ValueError("选中的指标在当前数据中都没有对应的数据列。")
+
+    # 复用 group 的 Prompt，只是 group_key 换成“自定义组合”
+    prompt = build_group_prompt(
+        ticker=ticker,
+        group_key="自定义指标组合",
+        df=df,
+        indicator_keys=valid_keys,
         schema=schema,
         user_prompt=user_prompt,
     )
