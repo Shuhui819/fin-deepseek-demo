@@ -484,3 +484,75 @@ def get_key_metrics(
     if mode in ("tidy", "snapshot"):
         return get_key_metrics_tidy(ticker, mvp_only=mvp_only, inspect=inspect, api_key=api_key)
     raise ValueError(f"Unknown output={output}. Use 'timeseries' or 'tidy'.")
+
+def get_key_metrics_multi_indicators(
+    tickers: list[str],
+    *,
+    output: str = "timeseries",
+    periods: str = "all",
+    mvp_only: bool = False,
+    inspect: bool = False,
+    api_key: str | None = None,
+):
+    """
+    返回格式：
+    {
+        "GrossMargin": DataFrame,
+        "DebtRatio": DataFrame,
+        "ROE": DataFrame,
+        ...
+    }
+
+    每个 DataFrame 结构：
+        Year | AAPL | MSFT | NVDA | ...
+    """
+    if not tickers:
+        raise ValueError("tickers must be a non-empty list")
+
+    # 用原函数加载每个 ticker 的 timeseries
+    all_data = {}
+    for t in tickers:
+        df = get_key_metrics(
+            t,
+            output="timeseries",
+            periods=periods,
+            mvp_only=mvp_only,
+            inspect=inspect,
+            api_key=api_key,
+        )
+
+        if df is None or df.empty:
+            continue
+
+        # Index must be string or int year
+        df = df.copy()
+        df.index = df.index.astype(str)
+
+        all_data[t] = df
+
+    if not all_data:
+        raise ValueError("No valid data for any ticker.")
+
+    # 统一指标列表
+    metrics = list(all_data[tickers[0]].columns)
+
+    # final result
+    result = {}
+
+    for metric in metrics:
+        frames = []
+        for t, df in all_data.items():
+            if metric not in df.columns:
+                continue
+
+            # 取出这个指标并重命名成该公司的列
+            s = df[[metric]].rename(columns={metric: t})
+
+            frames.append(s)
+
+        if frames:
+            # 合并所有公司该指标的列（按年份对齐）
+            merged = pd.concat(frames, axis=1)
+            result[metric] = merged
+
+    return result
